@@ -1,0 +1,7 @@
+#! /bin/bash
+
+sudo yum -y install https://github.com/nginxinc/nginx-asg-sync/releases/download/v0.4-1/nginx-asg-sync-0.4-1.el7.x86_64.rpm
+sudo systemctl enable nginx-asg-sync
+
+#webhook at startup for setting up NAP and adding the public IP address into the configuration of F5CS DNS LB
+curl -k -X POST -F token=c768d693cd4c29d9cef347fa98a280 -F ref=master https://gitlab.com/api/v4/projects/23098140/trigger/pipeline

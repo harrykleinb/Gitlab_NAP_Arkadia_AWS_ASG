@@ -1,0 +1,137 @@
+---
+
+- hosts: localhost
+  connection: local
+  gather_facts: False
+
+
+  tasks:
+
+    - name: create AWS VPC
+      amazon.aws.ec2_vpc_net:
+        state: present
+        name: "{{ id }}_VPC"
+        region: "{{ region }}"
+        cidr_block: "172.42.0.0/16"
+        validate_certs: no
+        tags:
+          Source: ansible
+          Environment: demo
+          Owner: "{{ id }}"
+
+    - name: create IAM role
+      community.aws.iam_role:
+        state: present
+        name: "{{ id }}_role_for_nginx_asg_sync"
+        assume_role_policy_document: "{{ lookup('file','policy.json') }}"
+        create_instance_profile: yes
+        validate_certs: no
+        purge_policies: yes
+
+    - name: create IAM inline policy
+      community.aws.iam_policy:
+        state: present
+        policy_name: "{{ id }}_inline_policy_nginx_asg_sync"
+        iam_name: "{{ id }}_role_for_nginx_asg_sync"
+        iam_type: role
+        policy_json: " {{ lookup( 'file', 'inline_policy.json') }} "
+        validate_certs: no
+
+    - name: GET VPC Properties
+      amazon.aws.ec2_vpc_net_info:
+        region: "{{ region }}"
+        filters:
+          "tag:Name": "{{ id }}_VPC"
+      register: VPC_Properties
+
+    - debug:
+        var: VPC_Properties
+
+    - name: Get VPC_ID
+      set_fact:
+        VPC_ID: "{{ VPC_Properties.vpcs.0.vpc_id }}"
+
+    - debug:
+        var: VPC_ID
+
+    - name: create subnet Zone A for NAP
+      amazon.aws.ec2_vpc_subnet:
+        state: present
+        region: "{{ region }}"
+        az: "{{ region }}a"
+        vpc_id: "{{ VPC_ID }}"
+        cidr: "172.42.20.0/24"
+        map_public: no
+        tags:
+          Name: "{{ id }}_subnet_nap_a"
+          Owner: "{{ id }}"
+          Env: "NAP"
+
+
+    - name: create subnet Zone B for NAP
+      amazon.aws.ec2_vpc_subnet:
+        state: present
+        region: "{{ region }}"
+        az: "{{ region }}b"
+        vpc_id: "{{ VPC_ID }}"
+        cidr: "172.42.21.0/24"
+        map_public: no
+        tags:
+          Name: "{{ id }}_subnet_nap_b"
+          Owner: "{{ id }}"
+          Env: "NAP"
+
+    - name: create subnet Zone A for Servers
+      amazon.aws.ec2_vpc_subnet:
+        state: present
+        region: "{{ region }}"
+        az: "{{ region }}a"
+        vpc_id: "{{ VPC_ID }}"
+        cidr: "172.42.30.0/24"
+        map_public: no
+        tags:
+          Name: "{{ id }}_subnet_servers_a"
+          Owner: "{{ id }}"
+          Env: "Servers"
+
+    - name: create subnet Zone B for Servers
+      amazon.aws.ec2_vpc_subnet:
+        state: present
+        region: "{{ region }}"
+        az: "{{ region }}b"
+        vpc_id: "{{ VPC_ID }}"
+        cidr: "172.42.31.0/24"
+        map_public: no
+        tags:
+          Name: "{{ id }}_subnet_servers_b"
+          Owner: "{{ id }}"
+          Env: "Servers"
+
+    - name: create Internet Gateway in the VPC
+      community.aws.ec2_vpc_igw:
+        state: present
+        region: "{{ region }}"
+        vpc_id: "{{ VPC_ID }}"
+        validate_certs: no
+        tags:
+          Name: "{{ id }}_internet-gateway"
+          Owner: "{{ id }}"
+      register: igw
+
+    - name: create Route Table in the VPC
+      community.aws.ec2_vpc_route_table:
+        state: present
+        region: "{{ region }}"
+        vpc_id: "{{ VPC_ID }}"
+        validate_certs: no
+        subnets:
+          - "{{ id }}_subnet_servers_a"
+          - "{{ id }}_subnet_servers_b"
+          - "{{ id }}_subnet_nap_a"
+          - "{{ id }}_subnet_nap_b"
+        routes:
+          - dest: 0.0.0.0/0
+            gateway_id: "{{ igw.gateway_id }}"
+        tags:
+          Name: "{{ id }}_Route_Table_1"
+          Owner: "{{ id }}"

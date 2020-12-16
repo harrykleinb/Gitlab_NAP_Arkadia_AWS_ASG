@@ -1,0 +1,245 @@
+---
+
+- hosts: localhost
+  connection: local
+  gather_facts: False
+
+  vars:
+    image_centos: ami-0cb72d2e599cffbf9   #CentoOS PAYG Paris
+    image_nap: ami-00058bfeea8bd9d32      #NAP PAYG Paris
+
+
+  tasks:
+
+    - name: GET VPC Properties
+      amazon.aws.ec2_vpc_net_info:
+        region: "{{ region }}"
+        filters:
+          "tag:Name": "{{ id }}_VPC"
+      register: VPC_Properties
+      tags:
+        - Arcadia
+        - NAP
+
+    - debug:
+        var: VPC_Properties
+      tags:
+        - Arcadia
+        - NAP
+
+    - name: Get VPC_ID            # Needed to create or filter some AWS resources
+      set_fact:
+        vpc_id: "{{ VPC_Properties.vpcs.0.vpc_id }}"
+      tags:
+        - Arcadia
+        - NAP
+
+    - debug:
+        var: vpc_id
+      tags:
+        - Arcadia
+        - NAP
+
+
+    - name: GET Servers Subnets Properties
+      amazon.aws.ec2_vpc_subnet_info:
+        region: "{{ region }}"
+        filters:
+          vpc-id: "{{ vpc_id }}"
+          "tag:Env": "Servers"
+        validate_certs: no
+      register: Subnets_Properties
+      tags:
+        - Arcadia
+
+    - name: GET NAP Subnets Properties
+      amazon.aws.ec2_vpc_subnet_info:
+        region: "{{ region }}"
+        filters:
+          vpc-id: "{{ vpc_id }}"
+          "tag:Env": "NAP"
+        validate_certs: no
+      register: Subnets_Properties
+      tags:
+        - NAP
+
+    - debug:
+        var: Subnets_Properties
+      tags:
+        - Arcadia
+        - NAP
+
+    - name: Get Subnet IDs          #needed to create Auto Scale Group
+      set_fact:
+        subnet_ids: "{{ Subnets_Properties.subnets|map(attribute='id')|list }}"
+      tags:
+          - Arcadia
+          - NAP
+
+    - debug:
+        var: subnet_ids
+      tags:
+        - Arcadia
+        - NAP
+
+
+    - name: create security group for Arcadia
+      amazon.aws.ec2_group:
+        state: present
+        description: "SG for Arcadia"
+        vpc_id: "{{ vpc_id }}"
+        name: "{{ id }}_SG_Arcadia"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: "{{ ip_admin }}/32"
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: "0.0.0.0/0"          #Gitlab Runners use dynamic IP Addresses. So, for SSH, we must allow everyone.
+          - proto: all
+            from_port: -1
+            to_port: -1
+            cidr_ip: "172.42.0.0/16"
+
+        rules_egress:
+          - proto: all
+            from_port: -1
+            to_port: -1
+            cidr_ip: 0.0.0.0/0
+        tags:
+            Source: ansible
+            Environement: demo
+            Name: "{{ id }}_SG_Arcadia"
+            Owner: "{{ id }}"
+      tags:
+          - Arcadia
+
+
+    - name: create security group for NAP
+      amazon.aws.ec2_group:
+        state: present
+        description: "SG for NAP"
+        vpc_id: "{{ vpc_id }}"
+        name: "{{ id }}_SG_NAP"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: "{{ ip_admin }}/32"
+          - proto: tcp
+            from_port: 8080
+            to_port: 8080
+            cidr_ip: "{{ ip_admin }}/32"
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: "0.0.0.0/0"          #Gitlab Runners use dynamic IP Addresses. So, for SSH, we must allow everyone.
+        rules_egress:
+          - proto: all
+            from_port: -1
+            to_port: -1
+            cidr_ip: 0.0.0.0/0
+        tags:
+            Source: ansible
+            Environement: demo
+            Name: "{{ id }}_SG_NAP"
+            Owner: "{{ id }}"
+      tags:
+          - NAP
+
+
+    - name: create launch config for web server
+      community.aws.ec2_lc:
+        name: "{{ id }}_Arcadia_LC"
+        assign_public_ip: yes
+        image_id: "{{ image_centos }}"
+        key_name: "{{ aws_key_name }}"
+        region: "{{ region }}"
+        security_groups: "{{ id }}_SG_Arcadia"
+        instance_type: t2.large
+        vpc_id: "{{ vpc_id }}"
+        user_data_path: "files/user_data.install_arcadia"
+      tags:
+          - Arcadia
+
+    - name: GET IAM Profile
+      community.aws.iam_role_info:
+        name: "{{ id }}_role_for_nginx_asg_sync"
+        region: "{{ region }}"
+        validate_certs: no
+      register: Role_Properties
+      tags:
+        - NAP
+
+    - debug:
+        var: Role_Properties
+      tags:
+        - NAP
+
+    - name: Get IAM Profile Name          #needed to create AWS Launch Config for NAP with ASG Sync
+      set_fact:
+        IAM_Profile_Name: "{{ Role_Properties.iam_roles.0.instance_profiles.0.instance_profile_name }}"
+      tags:
+        - NAP
+
+    - debug:
+        var: IAM_Profile_Name
+      tags:
+        - NAP
+
+    - name: create launch config for NAP
+      community.aws.ec2_lc:
+        name: "{{ id }}_NAP_LC"
+        assign_public_ip: yes
+        image_id: "{{ image_nap }}"
+        key_name: "{{ aws_key_name }}"
+        region: "{{ region }}"
+        security_groups: "{{ id }}_SG_NAP"
+        instance_type: t3.small           #look at the AMI info to check what are the instance types supported
+        vpc_id: "{{ vpc_id }}"
+        instance_profile_name: "{{ IAM_Profile_Name }}"
+        user_data_path: "files/user_data.webhook_nap_setup"        #run webhook at first startup to launch a ci/cd pipeline for getting the nap setup and adding the public IP address into F5CS DNS LB
+      tags:
+          - NAP
+
+    - name: create auto scale group for Arcadia
+      community.aws.ec2_asg:
+        name: "{{ id }}_Arcadia_ASG"
+        launch_config_name: "{{ id }}_Arcadia_LC"
+        health_check_period: 60
+        health_check_type: EC2
+        min_size: 2
+        max_size: 4
+        desired_capacity: "{{ nb_instances }}"
+        region: "{{ region }}"
+        vpc_zone_identifier: "{{ subnet_ids }}"
+        tags:
+          - Source: ansible
+            Environement: demo
+            Name: "{{ id }}_Arcadia"
+            Owner: "{{ id }}"
+      tags:
+          - Arcadia
+
+    - name: create auto scale group for NAP
+      community.aws.ec2_asg:
+        name: "{{ id }}_NAP_ASG"
+        launch_config_name: "{{ id }}_NAP_LC"
+        health_check_period: 60
+        health_check_type: EC2
+        min_size: 2
+        max_size: 4
+        desired_capacity: "{{ nb_instances }}"
+        region: "{{ region }}"
+        vpc_zone_identifier: "{{ subnet_ids }}"
+        tags:
+          - Source: ansible
+            Environement: demo
+            Name: "{{ id }}_NAP"
+            Owner: "{{ id }}"
+      tags:
+          - NAP

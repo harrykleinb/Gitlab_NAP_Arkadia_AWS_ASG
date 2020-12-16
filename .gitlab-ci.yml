@@ -1,0 +1,36 @@
+image: alpine:latest
+
+variables:
+    var_aws_profile: "harry"
+    var_key_pair: "HarryK_Key_Pair"
+    var_region: "eu-west-3"
+    var_id: "harryk"                       # will be used to create specific name for the objects and instances
+    var_ip_admin: "90.79.200.89"
+    var_nb_NAP: "2"                        # number of NAP instances to configure into the AWS Auto Scale Group
+    var_nb_Arkadia: "3"                    # number of Arkadia instances to configure into the AWS Auto Scale Group
+    ANSIBLE_HOST_KEY_CHECKING: "False"
+
+stages:
+    - Deploy_AWS_Infra
+    - Create_NAP_Arkadia_instances
+
+default:
+  before_script:
+    - apk add ansible py3-boto3
+    - ansible --version
+    - ansible-galaxy collection install amazon.aws community.aws
+
+
+Deploy_AWS_Infra:
+    stage: Deploy_AWS_Infra
+    script:
+        - ansible-playbook -e profile_aws=${var_aws_profile} -e ip_admin=${var_ip_admin} -e region=${var_region} -e aws_key_name=${var_key_pair} -e id=${var_id} playbooks/aws_infra.yml -vvv
+
+
+
+Create_NAP_Arkadia_instances:
+    stage: Create_NAP_Arkadia_instances
+    script:
+        - apk add aws-cli
+        - ansible-playbook -e profile_aws=${var_aws_profile} -e ip_admin=${var_ip_admin} -e region=${var_region} -e aws_key_name=${var_key_pair} -e id=${var_id} -e nb_instances=${var_nb_NAP} playbooks/Auto_Scale_Linux.yml --tags NAP
+        - ansible-playbook -e profile_aws=${var_aws_profile} -e ip_admin=${var_ip_admin} -e region=${var_region} -e aws_key_name=${var_key_pair} -e id=${var_id} -e nb_instances=${var_nb_Arkadia} playbooks/Auto_Scale_Linux.yml --tags Arcadia
